@@ -1,0 +1,6 @@
+{
+  "name": "GameEarn Pro - Mobile Gaming & Rewards App",
+  "description": "Mobile-first gaming rewards platform featuring casual games, daily challenges, points wallet, Indian UPI & bank withdrawal sandbox, anti-fraud controls, and admin dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
