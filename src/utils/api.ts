@@ -1,10 +1,17 @@
 import { UserProfile, WalletTransaction, WithdrawalRequest, DailyQuest, SystemConfig, AuditLog } from '../types';
 
 class ApiService {
-  private currentUserId: string = 'usr_default_2026';
+  private currentUserId: string = (typeof window !== 'undefined' && localStorage.getItem('gameearn_user_id')) || 'usr_default_2026';
 
   public setUserId(id: string) {
     this.currentUserId = id;
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('gameearn_user_id', id);
+      } catch {
+        // ignore
+      }
+    }
   }
 
   public getUserId(): string {
@@ -14,22 +21,53 @@ class ApiService {
   private async request<T>(url: string, options: RequestInit = {}): Promise<T> {
     const headers = {
       'Content-Type': 'application/json',
+      'Accept': 'application/json',
       'x-user-id': this.currentUserId,
       ...options.headers,
     };
 
-    const res = await fetch(url, { ...options, headers });
-    const data = await res.json();
+    let res: Response;
+    try {
+      res = await fetch(url, { ...options, headers });
+    } catch (networkErr: unknown) {
+      const msg = networkErr instanceof Error ? networkErr.message : 'Unknown connection error';
+      throw new Error(`Network error: Unable to connect to backend (${url}): ${msg}`);
+    }
+
+    const contentType = res.headers.get('content-type') || '';
+    let data: Record<string, unknown> | null = null;
+
+    if (contentType.includes('application/json')) {
+      try {
+        data = (await res.json()) as Record<string, unknown>;
+      } catch {
+        throw new Error(`Server returned invalid JSON response (${res.status} ${res.statusText}).`);
+      }
+    } else {
+      const rawText = await res.text();
+      const cleanSnippet = rawText.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
+
+      if (res.status === 404) {
+        throw new Error(
+          `API endpoint '${url}' not found (404). If deployed on Vercel, ensure the Vercel API routing rewrite is active.`
+        );
+      }
+
+      throw new Error(
+        `Backend returned unexpected non-JSON response (${res.status}): ${cleanSnippet || res.statusText || 'No response body'}`
+      );
+    }
 
     if (!res.ok) {
-      throw new Error(data.error || 'Request failed. Please try again.');
+      const errorMsg = typeof data?.error === 'string' ? data.error : `Request failed with status ${res.status}.`;
+      throw new Error(errorMsg);
     }
 
     return data as T;
   }
 
   // Auth
-  async sendOtp(identifier: string): Promise<{ success: boolean; devOtp: string; message: string }> {
+  async sendOtp(identifier: string): Promise<{ success: boolean; devOtp?: string; message: string }> {
     return this.request('/api/auth/send-otp', {
       method: 'POST',
       body: JSON.stringify({ identifier }),
@@ -41,13 +79,64 @@ class ApiService {
       method: 'POST',
       body: JSON.stringify({ identifier, otp, referralCode }),
     });
-    this.currentUserId = res.user.id;
+    this.setUserId(res.user.id);
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('gameearn_cached_user', JSON.stringify(res.user));
+      } catch {}
+    }
+    return res;
+  }
+
+  async guestLogin(mode: 'GUNJAN' | 'GUEST' = 'GUNJAN', name?: string): Promise<{ success: boolean; user: UserProfile; token: string }> {
+    const res = await this.request<{ success: boolean; user: UserProfile; token: string }>('/api/auth/guest-login', {
+      method: 'POST',
+      body: JSON.stringify({ mode, name }),
+    });
+    this.setUserId(res.user.id);
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('gameearn_cached_user', JSON.stringify(res.user));
+      } catch {}
+    }
+    return res;
+  }
+
+  async firebaseLogin(idToken: string, phoneNumber: string, referralCode?: string): Promise<{ success: boolean; user: UserProfile; token: string }> {
+    const res = await this.request<{ success: boolean; user: UserProfile; token: string }>('/api/auth/firebase-login', {
+      method: 'POST',
+      body: JSON.stringify({ idToken, phoneNumber, referralCode }),
+    });
+    this.setUserId(res.user.id);
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('gameearn_cached_user', JSON.stringify(res.user));
+      } catch {}
+    }
     return res;
   }
 
   async getCurrentUser(): Promise<UserProfile> {
-    const res = await this.request<{ user: UserProfile }>('/api/auth/me');
-    return res.user;
+    try {
+      const res = await this.request<{ user: UserProfile }>('/api/auth/me');
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem('gameearn_cached_user', JSON.stringify(res.user));
+        } catch {}
+      }
+      return res.user;
+    } catch (err) {
+      // If network or cold start fails, check for cached profile
+      if (typeof window !== 'undefined') {
+        const cached = localStorage.getItem('gameearn_cached_user');
+        if (cached) {
+          try {
+            return JSON.parse(cached);
+          } catch {}
+        }
+      }
+      throw err;
+    }
   }
 
   async updateProfile(updates: Partial<UserProfile>): Promise<UserProfile> {
